@@ -24,7 +24,7 @@ import { detectStackFit } from '../src/js/engine/stackFit.js';
 import { detectAiReadiness } from '../src/js/engine/aiReadiness.js';
 import { detectSlop } from '../src/js/engine/slopDetector.js';
 import { assembleContextBlock } from '../src/js/engine/contextBlock.js';
-import { normalizeHeadlineSignals } from '../src/js/api.js';
+import { normalizeHeadlineSignals } from '../src/js/data/github.js';
 
 /**
  * Compose the full verdict() input object from a raw repo fixture.

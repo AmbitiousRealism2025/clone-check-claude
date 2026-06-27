@@ -1,8 +1,0 @@
-# Greenfield home of the pure, deterministic verdict() engine (F1.1+).
-# This directory is intentionally empty at F1.0 scaffold time but committed
-# so the layout the M1 features build into exists.
-#
-# HARD INVARIANTS for everything authored here (see AGENTS.md):
-#   - verdict() is a PURE function: no DOM (document/window), no fetch.
-#   - Never emit the word "Safe" / "Safe to clone" as a verdict value.
-#   - Never return a positive verdict ("Looks clone-able") on missing data.

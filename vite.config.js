@@ -1,25 +1,21 @@
 import { defineConfig } from 'vite';
-import { resolve } from 'path';
 
+/**
+ * Clone Check — minimal Vite config.
+ *
+ * The warm web surface (the single-page verdict view) lands in M3; until then
+ * this is a bare config with no multi-page explorer entry points. The M1
+ * deliverables are the pure engine (src/js/engine) and the data layer
+ * (src/js/data), both consumed by the QA harness in scripts/.
+ */
 export default defineConfig({
   root: '.',
   base: './',
   build: {
     outDir: 'dist',
-    rollupOptions: {
-      input: {
-        main: resolve(__dirname, 'index.html'),
-        detail: resolve(__dirname, 'detail.html'),
-        favorites: resolve(__dirname, 'favorites.html'),
-        trending: resolve(__dirname, 'trending.html'),
-        collections: resolve(__dirname, 'collections.html'),
-        compare: resolve(__dirname, 'compare.html'),
-        pulse: resolve(__dirname, 'pulse.html'),
-      },
-    },
   },
   server: {
     port: 3000,
-    open: true,
+    open: false,
   },
 });

@@ -20,7 +20,7 @@ const BRIEF = WS + '/FACTORY-MISSION-PROMPT.md'
 const milestone = (args && args.milestone) || 'M1'
 const maxFixRounds = (args && args.maxFixRounds) || 2
 
-const INVARIANTS = 'HARD INVARIANTS (never violate): never output the word "Safe" as a verdict; never render a positive verdict on missing data (fall back to "Not enough signal"/cautionary); the verdict() engine is a PURE function (no DOM, no fetch) that all surfaces wrap; build ONLY what this feature/assertion claims (greenfield — do not "refactor" assets that do not exist). A false-green is the defining failure mode.'
+const INVARIANTS = 'HARD INVARIANTS (never violate): TRUE GREENFIELD — this is a from-scratch project; do NOT import, copy, fork, or transform the github-repo-explorer codebase (any file/line references in the brief are PATTERNS to implement correctly from scratch, never files to edit/reuse/carry over); never output the word "Safe" as a verdict; never render a positive verdict on missing data (fall back to "Not enough signal"/cautionary); the verdict() engine is a PURE function (no DOM, no fetch) that all surfaces wrap; build ONLY what this feature/assertion claims. A false-green is the defining failure mode.'
 
 const PLAN_SCHEMA = {
   type: 'object', required: ['milestone', 'intent', 'features'],
