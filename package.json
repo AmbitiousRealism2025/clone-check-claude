@@ -1,0 +1,33 @@
+{
+  "name": "clone-check",
+  "version": "0.1.0",
+  "description": "Clone Check — a trustworthy \"should I clone this starter?\" verdict engine (deterministic pure-function core + two surfaces)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "keywords": [
+    "clone-check",
+    "github",
+    "due-diligence",
+    "mcp",
+    "verdict"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@vitest/coverage-v8": "^4.0.16",
+    "jsdom": "^27.4.0",
+    "vite": "^7.3.0",
+    "vitest": "^4.0.16"
+  },
+  "dependencies": {
+    "dompurify": "^3.3.1",
+    "marked": "^17.0.1"
+  }
+}

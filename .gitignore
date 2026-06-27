@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Vite / test caches
+.vite/
+coverage/
+
+# QA / run harness logs (F1.5, VC-QA-01) — written to a known on-disk path,
+# secrets redacted, MUST stay out of VCS (HC-12).
+logs/
+*.log
+npm-debug.log*
+
+# Auto Claude / orchestration data
+.auto-claude/
+.worktrees/
+.claude/
+.claude_settings.json
+
+# Editor/IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
