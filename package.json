@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "start": "bash scripts/start.sh",
+    "qa": "node scripts/qa-harness.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",

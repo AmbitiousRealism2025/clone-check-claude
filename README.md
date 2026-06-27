@@ -50,6 +50,28 @@ This is a **trust product** — a false-green slipping past validation is the de
 
 ---
 
+## Running the app & QA harness (M1 — VC-QA-01 / VC-QA-02)
+
+The QA/run harness lands in **M1** (not last) so the app is black-box testable
+from the very first milestone. A fresh-context validator needs only these two
+commands — no tribal knowledge, **no GitHub token** for the core path.
+
+| Command | What it does | Log path (gitignored, secrets redacted) |
+|---|---|---|
+| `npm start` | **The one documented start command.** Starts the Vite dev server for black-box testing at `http://localhost:3000` (override with `PORT=NNNN npm start`). All server output is piped through the secret redactor and tee'd to disk. | `logs/app.log` |
+| `npm run qa` | Runs the scriptable end-to-end harness. Drives a verdict **two ways** and asserts they agree: (1) the **web/engine path** — input repo → F1.2 data layer (`normalizeHeadlineSignals`) → F1.1 `verdict()`; and (2) the **MCP `clone_check` path** — a programmatic stub wired to the same pure core (the real MCP server arrives in M2/F2.3). Exits non-zero if the two paths diverge. | `logs/qa-harness.log` |
+
+The `logs/` directory is excluded from VCS and CI (see `.gitignore`); credentials
+(GitHub PATs, `Bearer` headers, and any `GH_TOKEN`/`GITHUB_TOKEN` env values) are
+replaced with `***REDACTED***` before anything is written to disk.
+
+```bash
+npm run qa     # prints BOTH the WEB/ENGINE and MCP clone_check paths; writes logs/qa-harness.log
+npm start      # serves the app; writes logs/app.log
+```
+
+---
+
 ## Scope & milestones
 
 **Built in v1:** the pure `verdict()` engine + trust safeguards; a new contents API + cheap-tier data layer; the four greenfield differentiators (slop detector, stack-fit matcher, AI-readiness check, deterministic context block); the MCP server; the warm web surface; a serverless **SHA-keyed verdict cache**; CI + deploy with real HTTP headers; the chosen light-first design direction; accessibility fixes; and the trust-incident containment layer.
