@@ -14,8 +14,18 @@ import {
   getPullRequestTimeline,
   getReleaseHistory,
   fetchPulseData,
-  clearCache
+  clearCache,
+  getRepositoryCommits,
+  getRepositoryPackageJson,
+  getFileTree,
+  detectAiRulesFiles,
+  getAiRulesFiles,
+  normalizeHeadlineSignals,
+  fetchHeadlineData,
+  normalizeReceiptStat,
+  fetchReceiptsData
 } from '../api.js';
+import { verdict, STATE_VALUES, STATES } from '../engine/verdict.js';
 
 const mockFetchResponse = (data, options = {}) => {
   const response = {
@@ -922,5 +932,315 @@ describe('API', () => {
       expect(result.releases).toEqual(mockReleases);
       expect(result.commits).toBeNull();
     });
+  });
+});
+
+// ===========================================================================
+// F1.2 — Contents API + tiered cheap-call data layer
+// ===========================================================================
+
+const ok = (data, headerVal = '59') => ({
+  ok: true,
+  status: 200,
+  json: () => Promise.resolve(data),
+  headers: { get: () => headerVal }
+});
+
+const status202 = () => ({
+  ok: true,
+  status: 202,
+  json: () => Promise.resolve(null),
+  headers: { get: () => '59' }
+});
+
+const b64 = (str) => {
+  const bytes = new TextEncoder().encode(str);
+  const bin = Array.from(bytes).map((x) => String.fromCharCode(x)).join('');
+  return btoa(bin);
+};
+
+const urlsCalled = () => global.fetch.mock.calls.map((c) => String(c[0]));
+const STATS_PATHS = ['stats/participation', 'stats/contributors', 'stats/commit_activity'];
+const anyStatsCall = () => urlsCalled().some((u) => STATS_PATHS.some((p) => u.includes(p)));
+
+describe('F1.2 Contents API (VC-CONTENTS-01)', () => {
+  beforeEach(() => {
+    clearCache();
+    vi.clearAllMocks();
+    global.fetch = vi.fn();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('fetches and parses package.json (mocked contents response)', async () => {
+    const pkg = { name: 'cool-starter', dependencies: { next: '14.0.0', '@supabase/supabase-js': '2.0.0' } };
+    global.fetch.mockResolvedValueOnce(ok({ content: b64(JSON.stringify(pkg)), encoding: 'base64', path: 'package.json' }));
+
+    const res = await getRepositoryPackageJson('owner', 'repo');
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/repos/owner/repo/contents/package.json'),
+      expect.any(Object)
+    );
+    expect(res.data.parsed).toEqual(pkg);
+    expect(res.data.decodedContent).toContain('cool-starter');
+  });
+
+  it('returns null data (never fabricated) for a missing package.json', async () => {
+    global.fetch.mockRejectedValueOnce(new Error('Resource not found'));
+    const res = await getRepositoryPackageJson('owner', 'repo');
+    expect(res.data).toBeNull();
+  });
+
+  it('parses to null (not a fabricated object) on malformed package.json', async () => {
+    global.fetch.mockResolvedValueOnce(ok({ content: b64('{not valid json'), encoding: 'base64' }));
+    const res = await getRepositoryPackageJson('owner', 'repo');
+    expect(res.data.parsed).toBeNull();
+  });
+
+  it('fetches the README via the existing contents-backed reader (mocked)', async () => {
+    global.fetch.mockResolvedValueOnce(ok({ content: b64('# Title\nbody'), encoding: 'base64' }));
+    const res = await getRepositoryReadme('owner', 'repo');
+    expect(res.data.decodedContent).toBe('# Title\nbody');
+  });
+
+  it('fetches the recursive file tree (mocked git/trees response)', async () => {
+    const tree = { sha: 'abc', truncated: false, tree: [
+      { path: 'src/index.js', type: 'blob' },
+      { path: 'package.json', type: 'blob' }
+    ] };
+    global.fetch.mockResolvedValueOnce(ok(tree));
+    const res = await getFileTree('owner', 'repo');
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/repos/owner/repo/git/trees/HEAD?recursive=1'),
+      expect.any(Object)
+    );
+    expect(res.data.tree).toHaveLength(2);
+  });
+
+  it('detects AI-rules files (CLAUDE.md / AGENTS.md / .cursor) from a mocked tree', async () => {
+    const tree = { truncated: false, tree: [
+      { path: 'CLAUDE.md', type: 'blob' },
+      { path: 'AGENTS.md', type: 'blob' },
+      { path: '.cursor/rules.md', type: 'blob' },
+      { path: 'src/app.ts', type: 'blob' }
+    ] };
+    global.fetch.mockResolvedValueOnce(ok(tree));
+    const rules = await getAiRulesFiles('owner', 'repo');
+    expect(rules.hasClaudeMd).toBe(true);
+    expect(rules.hasAgentsMd).toBe(true);
+    expect(rules.hasCursor).toBe(true);
+    expect(rules.files).toEqual(expect.arrayContaining(['CLAUDE.md', 'AGENTS.md', '.cursor/rules.md']));
+  });
+
+  it('detectAiRulesFiles is pure and reports absence honestly', () => {
+    const out = detectAiRulesFiles([{ path: 'src/index.js' }, { path: 'README.md' }]);
+    expect(out).toEqual({ hasClaudeMd: false, hasAgentsMd: false, hasCursor: false, files: [] });
+    // tolerant of junk input
+    expect(detectAiRulesFiles(null).hasClaudeMd).toBe(false);
+  });
+
+  it('recognizes a root .cursorrules file', () => {
+    expect(detectAiRulesFiles([{ path: '.cursorrules' }]).hasCursor).toBe(true);
+  });
+});
+
+describe('F1.2 Headline data layer — <=2 cheap calls (VC-DATA-01 / HC-5)', () => {
+  beforeEach(() => {
+    clearCache();
+    vi.clearAllMocks();
+    global.fetch = vi.fn();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  const wireHeadline = (repoMeta, commits) => {
+    global.fetch.mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes('/repos/owner/repo/commits')) return Promise.resolve(ok(commits));
+      if (/\/repos\/owner\/repo(\?|$)/.test(u)) return Promise.resolve(ok(repoMeta));
+      return Promise.resolve(ok({}));
+    });
+  };
+
+  it('makes EXACTLY two GitHub calls (repo metadata + one commits list) and NO stats calls', async () => {
+    wireHeadline({ name: 'repo', license: { spdx_id: 'MIT' }, pushed_at: '2026-06-20T00:00:00Z' }, [
+      { commit: { author: { date: '2026-06-25T00:00:00Z' } }, author: { login: 'a' } },
+      { commit: { author: { date: '2026-06-24T00:00:00Z' } }, author: { login: 'b' } }
+    ]);
+
+    await fetchHeadlineData('owner', 'repo', { now: Date.parse('2026-06-26T00:00:00Z') });
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+    const urls = urlsCalled();
+    expect(urls.some((u) => /\/repos\/owner\/repo(\?|$)/.test(u))).toBe(true);
+    expect(urls.some((u) => u.includes('/repos/owner/repo/commits'))).toBe(true);
+    expect(anyStatsCall()).toBe(false);
+  });
+
+  it('the headline verdict is computable from those two calls alone', async () => {
+    const now = Date.parse('2026-06-26T00:00:00Z');
+    wireHeadline(
+      { name: 'cool', description: 'A starter', owner: { type: 'User' }, license: { spdx_id: 'MIT' }, pushed_at: '2026-06-25T00:00:00Z' },
+      [
+        { commit: { author: { date: '2026-06-25T00:00:00Z' } }, author: { login: 'a' } },
+        { commit: { author: { date: '2026-06-24T00:00:00Z' } }, author: { login: 'b' } },
+        { commit: { author: { date: '2026-06-23T00:00:00Z' } }, author: { login: 'c' } }
+      ]
+    );
+
+    const { signals } = await fetchHeadlineData('owner', 'repo', { now });
+    const v = verdict(signals);
+
+    expect(STATE_VALUES).toContain(v.state);
+    expect(v.state).toBe(STATES.CLONEABLE); // healthy MIT repo, recent, distributed authorship
+    expect(v.disclaimer).toContain('not a security audit');
+    expect(v.disclaimer).toContain('2026-06-26');
+  });
+
+  it('normalizeHeadlineSignals is pure (no clock read; deterministic for fixed now)', () => {
+    const repoMeta = { name: 'r', license: { spdx_id: 'MIT' }, pushed_at: '2026-06-25T00:00:00Z' };
+    const commits = [{ commit: { author: { date: '2026-06-25T00:00:00Z' } }, author: { login: 'a' } }];
+    const a = normalizeHeadlineSignals(repoMeta, commits, 1000000000000);
+    const b = normalizeHeadlineSignals(repoMeta, commits, 1000000000000);
+    expect(a).toEqual(b);
+  });
+});
+
+describe('F1.2 Expensive stats are opt-in (VC-DATA-05)', () => {
+  beforeEach(() => {
+    clearCache();
+    vi.clearAllMocks();
+    global.fetch = vi.fn();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('headline render fires NO stats calls; opening receipts fires them', async () => {
+    global.fetch.mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes('/repos/owner/repo/commits')) return Promise.resolve(ok([{ commit: { author: { date: '2026-06-25T00:00:00Z' } }, author: { login: 'a' } }]));
+      if (/\/repos\/owner\/repo(\?|$)/.test(u)) return Promise.resolve(ok({ name: 'repo', license: { spdx_id: 'MIT' } }));
+      if (u.includes('stats/participation')) return Promise.resolve(ok({ all: [1, 2, 3], owner: [0, 1, 1] }));
+      if (u.includes('stats/contributors')) return Promise.resolve(ok([{ author: { login: 'a' }, total: 9 }]));
+      if (u.includes('stats/commit_activity')) return Promise.resolve(ok([{ week: 1, total: 5, days: [1, 1, 1, 1, 1, 0, 0] }]));
+      return Promise.resolve(ok({}));
+    });
+
+    // BEFORE opt-in: headline only
+    await fetchHeadlineData('owner', 'repo', { now: Date.parse('2026-06-26T00:00:00Z') });
+    expect(anyStatsCall()).toBe(false);
+
+    // AFTER opt-in: receipts
+    const receipts = await fetchReceiptsData('owner', 'repo');
+    expect(anyStatsCall()).toBe(true);
+    const after = urlsCalled();
+    expect(after.some((u) => u.includes('stats/participation'))).toBe(true);
+    expect(after.some((u) => u.includes('stats/contributors'))).toBe(true);
+    expect(after.some((u) => u.includes('stats/commit_activity'))).toBe(true);
+    expect(receipts.participation.status).toBe('ok');
+  });
+});
+
+describe('F1.2 Honest failure modes — 202 / empty {} (VC-DATA-03 / HC-6)', () => {
+  beforeEach(() => {
+    clearCache();
+    vi.clearAllMocks();
+    global.fetch = vi.fn();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('normalizeReceiptStat: 202 -> computing, empty -> unknown, never a number/green', () => {
+    expect(normalizeReceiptStat({ data: null, processing: true })).toEqual({ status: 'computing', data: null });
+    expect(normalizeReceiptStat({ data: {} })).toEqual({ status: 'unknown', data: null });
+    expect(normalizeReceiptStat({ data: [] })).toEqual({ status: 'unknown', data: null });
+    expect(normalizeReceiptStat(null)).toEqual({ status: 'unknown', data: null });
+    const okStat = normalizeReceiptStat({ data: { all: [1, 2] } });
+    expect(okStat.status).toBe('ok');
+    expect(okStat.data).toEqual({ all: [1, 2] });
+  });
+
+  it('headline still renders while stats return 202 (computing) — no fabricated number, no green', async () => {
+    global.fetch.mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes('/repos/owner/repo/commits')) return Promise.resolve(ok([{ commit: { author: { date: '2026-06-25T00:00:00Z' } }, author: { login: 'a' } }]));
+      if (/\/repos\/owner\/repo(\?|$)/.test(u)) return Promise.resolve(ok({ name: 'repo', license: { spdx_id: 'MIT' } }));
+      // all stats endpoints stuck computing
+      return Promise.resolve(status202());
+    });
+
+    const { signals } = await fetchHeadlineData('owner', 'repo', { now: Date.parse('2026-06-26T00:00:00Z') });
+    const v = verdict(signals);
+    // Headline paints a real, valid state independent of stats.
+    expect(STATE_VALUES).toContain(v.state);
+
+    const receipts = await fetchReceiptsData('owner', 'repo');
+    expect(receipts.participation.status).toBe('computing');
+    expect(receipts.contributors.status).toBe('computing');
+    expect(receipts.commitActivity.status).toBe('computing');
+    // No fabricated numeric value leaked through.
+    expect(receipts.participation.data).toBeNull();
+  });
+
+  it('empty {} stats degrade to Unknown, never a default green', async () => {
+    global.fetch.mockImplementation((url) => {
+      const u = String(url);
+      if (u.includes('stats/participation')) return Promise.resolve(ok({}));
+      if (u.includes('stats/contributors')) return Promise.resolve(ok([]));
+      if (u.includes('stats/commit_activity')) return Promise.resolve(ok([]));
+      return Promise.resolve(ok({}));
+    });
+
+    const receipts = await fetchReceiptsData('owner', 'repo');
+    expect(receipts.participation.status).toBe('unknown');
+    expect(receipts.contributors.status).toBe('unknown');
+    expect(receipts.commitActivity.status).toBe('unknown');
+    for (const m of Object.values(receipts)) {
+      expect(m.data).toBeNull();
+      expect(m.status).not.toBe('ok');
+    }
+  });
+
+  it('a missing license never yields the positive verdict (no false-green)', () => {
+    const signals = normalizeHeadlineSignals(
+      { name: 'r', license: null, pushed_at: '2026-06-25T00:00:00Z' },
+      [
+        { commit: { author: { date: '2026-06-25T00:00:00Z' } }, author: { login: 'a' } },
+        { commit: { author: { date: '2026-06-24T00:00:00Z' } }, author: { login: 'b' } }
+      ],
+      Date.parse('2026-06-26T00:00:00Z')
+    );
+    const v = verdict(signals);
+    expect(v.state).not.toBe(STATES.CLONEABLE);
+  });
+});
+
+describe('F1.2 Stats endpoints routed through retry+cache envelope (STATS_CACHE_TTL_MS active)', () => {
+  beforeEach(() => {
+    clearCache();
+    vi.clearAllMocks();
+    global.fetch = vi.fn();
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it('caches a successful stats response (second call served from stats cache)', async () => {
+    global.fetch.mockResolvedValue(ok({ all: [1, 2, 3], owner: [0, 1, 1] }));
+    await getParticipationStats('owner', 'repo');
+    await getParticipationStats('owner', 'repo');
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('clearCache also clears the stats cache', async () => {
+    global.fetch.mockResolvedValue(ok({ all: [1] }));
+    await getContributorStats('owner', 'repo');
+    clearCache();
+    await getContributorStats('owner', 'repo');
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('getRepositoryCommits hits the commits endpoint', async () => {
+    global.fetch.mockResolvedValueOnce(ok([{ sha: '1' }]));
+    const res = await getRepositoryCommits('owner', 'repo');
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/repos/owner/repo/commits?per_page=30'),
+      expect.any(Object)
+    );
+    expect(res.data).toEqual([{ sha: '1' }]);
   });
 });
