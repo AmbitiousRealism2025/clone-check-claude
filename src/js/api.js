@@ -435,7 +435,19 @@ export const getIssueTimeline = async (owner, repo, params = {}) => {
     ...params
   });
   const url = `${API_BASE}/repos/${owner}/${repo}/issues?${query}`;
-  return fetchWithRetry(url);
+  const result = await fetchWithRetry(url);
+
+  // VC-DATA-02 (report bug #8): GitHub's /issues endpoint returns pull
+  // requests intermingled with issues — every PR object carries a
+  // `pull_request` field. Strip them here, at the data boundary, so no
+  // downstream issue count/temperature signal is inflated by PRs.
+  if (result && Array.isArray(result.data)) {
+    result.data = result.data.filter(
+      (item) => item && item.pull_request === undefined
+    );
+  }
+
+  return result;
 };
 
 /**

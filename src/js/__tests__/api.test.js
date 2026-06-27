@@ -539,6 +539,29 @@ describe('API', () => {
       expect(calledUrl).toContain('state=open');
       expect(calledUrl).toContain('per_page=50');
     });
+
+    // F1.3 / VC-DATA-02 — GitHub's /issues endpoint returns PRs intermingled;
+    // they carry a `pull_request` field and must be stripped at the data
+    // boundary so issue counts/temperature are not inflated.
+    it('should exclude pull requests from issue results (VC-DATA-02)', async () => {
+      const mixed = [
+        { id: 1, title: 'Real issue', state: 'open', created_at: '2024-01-01T00:00:00Z' },
+        { id: 2, title: 'A PR masquerading as an issue', state: 'open', created_at: '2024-01-02T00:00:00Z', pull_request: { url: 'https://api.github.com/repos/owner/repo/pulls/2' } },
+        { id: 3, title: 'Another real issue', state: 'closed', created_at: '2024-01-03T00:00:00Z' }
+      ];
+      global.fetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(mixed),
+        headers: { get: () => '59' }
+      });
+
+      const result = await getIssueTimeline('owner', 'repo');
+
+      expect(result.data).toHaveLength(2);
+      expect(result.data.every((item) => !('pull_request' in item))).toBe(true);
+      expect(result.data.map((i) => i.id)).toEqual([1, 3]);
+    });
   });
 
   describe('getPullRequestTimeline', () => {
@@ -791,6 +814,25 @@ describe('API', () => {
       expect(result.pullRequests).toEqual(mockPullRequests);
       expect(result.releases).toEqual(mockReleases);
       expect(result.commits).toEqual(mockCommits);
+    });
+
+    it('should exclude pull requests from issues in pulse data (VC-DATA-02)', async () => {
+      const mixedIssues = [
+        { id: 1, title: 'Real issue', state: 'open' },
+        { id: 2, title: 'PR in disguise', state: 'open', pull_request: { url: 'x' } }
+      ];
+      global.fetch.mockImplementation((url) => {
+        if (url.includes('/issues')) {
+          return Promise.resolve(mockSuccessResponse(mixedIssues));
+        }
+        return Promise.resolve(mockSuccessResponse([]));
+      });
+
+      const result = await fetchPulseData('owner', 'repo');
+
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].id).toBe(1);
+      expect(result.issues.every((i) => !('pull_request' in i))).toBe(true);
     });
 
     it('should return null for failed endpoints while returning data for successful ones', async () => {

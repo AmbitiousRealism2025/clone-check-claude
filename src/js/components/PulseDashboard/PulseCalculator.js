@@ -635,11 +635,20 @@ export function calculateIssueTemperature(issues) {
     return getDefaultMetric('issues');
   }
 
+  // VC-DATA-02 (report bug #8): GitHub's /issues endpoint intermingles pull
+  // requests (each carries a `pull_request` field). Exclude them so the issue
+  // temperature signal is computed from genuine issues only. This is defensive
+  // — the data boundary (api.js getIssueTimeline) also filters — so any caller
+  // passing raw /issues data still gets a PR-free count.
+  const issuesOnly = issues.filter(
+    issue => issue && issue.pull_request === undefined
+  );
+
   // Filter to issues within the analysis window (last 30 days)
   const windowDays = ISSUES.WINDOW_DAYS;
   const windowCutoff = Date.now() - (windowDays * TIME_MS.DAY);
 
-  const recentIssues = issues.filter(issue => {
+  const recentIssues = issuesOnly.filter(issue => {
     if (!issue?.created_at) return false;
     const createdDate = safeParseDate(issue.created_at);
     return createdDate && createdDate.getTime() >= windowCutoff;
@@ -1167,6 +1176,14 @@ export function calculateBusFactor(contributors) {
   // Top 10 contributors' relative contribution percentages
   const sparklineData = generateContributorSparkline(sorted, totalCommits);
 
+  // VC-DATA-04 (report bug #3): plumb REAL {login, percentage} contributor
+  // rows end-to-end. The renderer (createContributorBars) expects objects with
+  // `login` and `percentage`; previously pulse.js fed it the raw sparkline
+  // numbers, so every row rendered "Unknown 0%". Build the real rows here, at
+  // the single calculator seam, so every surface (pulse.js + detail.js) shows
+  // actual logins and percentages.
+  const distribution = generateContributorDistribution(sorted, totalCommits);
+
   // Calculate trend (not applicable for bus factor - it's a snapshot metric)
   // We use 0 as trend since we can't compare historical contributor data
   const trend = 0;
@@ -1191,6 +1208,7 @@ export function calculateBusFactor(contributors) {
     trend,
     direction,
     sparklineData,
+    distribution,
     status,
     label,
     riskLevel,
@@ -1228,6 +1246,45 @@ function generateContributorSparkline(sortedContributors, totalCommits) {
   }
 
   return sparkline;
+}
+
+/**
+ * Generate the real contributor distribution for the bus-factor view.
+ * Produces an array of {login, percentage} rows (top contributors first) that
+ * the renderer (createContributorBars) consumes directly. Unlike the sparkline
+ * (raw numbers, zero-padded for visualization), this carries the contributor
+ * identity so rows render actual logins/percentages — never "Unknown 0%".
+ *
+ * VC-DATA-04 (report bug #3): the single seam where contributor identity is
+ * preserved end-to-end.
+ *
+ * @param {Object[]} sortedContributors - Contributors sorted by commits (desc),
+ *   each `{ total, author: { login } }`.
+ * @param {number} totalCommits - Total commits across all contributors.
+ * @returns {Array<{login: string, percentage: number}>} Real contributor rows.
+ */
+function generateContributorDistribution(sortedContributors, totalCommits) {
+  if (!Array.isArray(sortedContributors) || totalCommits <= 0) {
+    return [];
+  }
+
+  const maxPoints = 10;
+  const count = Math.min(sortedContributors.length, maxPoints);
+  const rows = [];
+
+  for (let i = 0; i < count; i++) {
+    const contributor = sortedContributors[i];
+    const login = contributor?.author?.login;
+    // Skip any row without a real login — never fabricate an "Unknown".
+    if (!login) continue;
+    const percentage = (contributor.total / totalCommits) * 100;
+    rows.push({
+      login,
+      percentage: Math.round(percentage * 10) / 10
+    });
+  }
+
+  return rows;
 }
 
 /**

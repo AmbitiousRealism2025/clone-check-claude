@@ -2681,6 +2681,25 @@ describe('PulseCalculator', () => {
 
         expect(result.sparklineData).toHaveLength(30);
       });
+
+      // F1.3 / VC-DATA-02 — issue temperature must exclude pull requests.
+      // GitHub's /issues endpoint returns PRs intermingled (they carry a
+      // `pull_request` field); counting them inflates the issue signal.
+      it('should exclude pull requests from issue counts (VC-DATA-02)', () => {
+        const recent = () =>
+          new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+        const mixed = [
+          { created_at: recent(), state: 'open' },                       // real issue
+          { created_at: recent(), state: 'closed', closed_at: recent() },// real issue
+          { created_at: recent(), state: 'open', pull_request: { url: 'x' } }, // PR
+          { created_at: recent(), state: 'closed', closed_at: recent(), pull_request: { url: 'y' } } // PR
+        ];
+
+        const result = calculateIssueTemperature(mixed);
+
+        // Only the two genuine issues are counted; the two PRs are excluded.
+        expect(result.totalCount).toBe(2);
+      });
     });
 
     describe('calculatePRHealth', () => {
@@ -2866,6 +2885,95 @@ describe('PulseCalculator', () => {
         const result = calculateBusFactor(contributors);
 
         expect(result.contributorsFor80Percent).toBeLessThanOrEqual(contributors.length);
+      });
+
+      // F1.3 / VC-DATA-04 — the bus-factor metric must carry real
+      // {login, percentage} contributor rows so the renderer can show actual
+      // logins/percentages instead of "Unknown 0%".
+      it('should expose a distribution of {login, percentage} rows (VC-DATA-04)', () => {
+        const contributors = [
+          { total: 70, author: { login: 'alice' } },
+          { total: 20, author: { login: 'bob' } },
+          { total: 10, author: { login: 'carol' } }
+        ];
+        const result = calculateBusFactor(contributors);
+
+        expect(Array.isArray(result.distribution)).toBe(true);
+        expect(result.distribution.length).toBe(3);
+
+        // Every row is a real {login, percentage} object — never "Unknown 0%".
+        result.distribution.forEach((row) => {
+          expect(typeof row.login).toBe('string');
+          expect(row.login).not.toBe('Unknown');
+          expect(typeof row.percentage).toBe('number');
+          expect(row.percentage).toBeGreaterThan(0);
+        });
+
+        // Sorted by contribution share, top contributor first.
+        expect(result.distribution[0].login).toBe('alice');
+        expect(Math.round(result.distribution[0].percentage)).toBe(70);
+      });
+    });
+
+    // F1.3 / VC-DATA-04 — end-to-end: the contributor-bars renderer fed the
+    // bus-factor metric's distribution must paint real logins/percentages and
+    // NEVER an "Unknown 0%" row (the pulse.js:211 bug fed raw sparkline numbers).
+    describe('Bus factor renders real contributors (VC-DATA-04)', () => {
+      it('renders logins and percentages, never an "Unknown 0%" row', () => {
+        const contributors = [
+          { total: 70, author: { login: 'alice' } },
+          { total: 20, author: { login: 'bob' } },
+          { total: 10, author: { login: 'carol' } }
+        ];
+        const busFactor = calculateBusFactor(contributors);
+
+        // The renderer consumes `distribution` (what pulse.js now plumbs through).
+        const el = createContributorBars(busFactor.distribution);
+
+        const names = Array.from(
+          el.querySelectorAll('.contributor-bars__name')
+        ).map((n) => n.textContent);
+        const values = Array.from(
+          el.querySelectorAll('.contributor-bars__value')
+        ).map((v) => v.textContent);
+
+        expect(names).toContain('alice');
+        expect(names).toContain('bob');
+        expect(names).toContain('carol');
+
+        // No "Unknown" login and no "0%" value anywhere.
+        expect(names).not.toContain('Unknown');
+        values.forEach((v) => expect(v).not.toBe('0%'));
+
+        // And specifically no combined "Unknown 0%" row.
+        const rows = Array.from(el.querySelectorAll('.contributor-bars__row'));
+        rows.forEach((row) => {
+          const text = row.textContent;
+          expect(text.includes('Unknown') && text.includes('0%')).toBe(false);
+        });
+      });
+
+      it('regression: feeding raw sparkline numbers WOULD produce Unknown 0% (guard rationale)', () => {
+        const contributors = [
+          { total: 70, author: { login: 'alice' } },
+          { total: 30, author: { login: 'bob' } }
+        ];
+        const busFactor = calculateBusFactor(contributors);
+
+        // The OLD bug passed sparklineData (raw numbers) to the renderer.
+        const buggy = createContributorBars(busFactor.sparklineData);
+        const buggyNames = Array.from(
+          buggy.querySelectorAll('.contributor-bars__name')
+        ).map((n) => n.textContent);
+        // Demonstrates the failure mode the fix avoids.
+        expect(buggyNames.every((n) => n === 'Unknown')).toBe(true);
+
+        // The FIXED path passes distribution and avoids it.
+        const fixed = createContributorBars(busFactor.distribution);
+        const fixedNames = Array.from(
+          fixed.querySelectorAll('.contributor-bars__name')
+        ).map((n) => n.textContent);
+        expect(fixedNames).toEqual(['alice', 'bob']);
       });
     });
 

@@ -208,7 +208,10 @@ const loadPulseDashboard = async () => {
         status: calculatedMetrics.metrics.prs.status
       },
       busFactor: {
-        distribution: calculatedMetrics.metrics.busFactor.sparklineData,
+        // VC-DATA-04 (report bug #3): plumb the REAL {login, percentage} rows
+        // the renderer expects. Previously this fed `sparklineData` (raw
+        // numbers), so every contributor row rendered "Unknown 0%".
+        distribution: calculatedMetrics.metrics.busFactor.distribution,
         status: calculatedMetrics.metrics.busFactor.status
       },
       releaseFreshness: {
